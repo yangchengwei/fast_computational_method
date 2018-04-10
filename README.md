@@ -1,5 +1,9 @@
-# Fast Computational Method
+﻿# Fast Computational Method
 
-- hw1:
+- operation_time:
 
-    在你自己的電腦(如果沒有，就是電腦室的)，用你熟悉的程式語言，計算加法，乘法，及三角函數(sin)所需要的時間。
+    計算加法，乘法，及三角函數(sin)所需要的時間。
+
+- compute_matrix:
+
+    N×N矩陣A乘上一個N×1向量x的程式，透過openmp做平行計算。看看平行計算可以加速多少？
