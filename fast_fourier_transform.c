@@ -1,20 +1,253 @@
-
 #include <stdio.h>
 #include <stdlib.h> 
 #include <math.h>
+#include <time.h>
 
 #define DEBUG 0
 
 
-/* bit_reverse */
+/* Fast Fourier Transform (parallel) (all-in-one) */
 
-int bit_reverse(double *x_re, double *x_im, int N, int power_2, int power_3, int power_5, int power_sum, int *order)
+int FFT_general(double *x_re, double *x_im, int N)
+{
+    int copy_N = N, power_sum = 0;
+    int power_2=0, power_3=0, power_5=0;
+    while(copy_N%2==0){ power_2++; copy_N/=2; }
+    while(copy_N%3==0){ power_3++; copy_N/=3; }
+    while(copy_N%5==0){ power_5++; copy_N/=5; }
+    power_sum = power_2 + power_3 + power_5;
+    #if DEBUG
+    printf("power_2=%d, power_3=%d, power_5=%d, power_sum=%d\n", power_2, power_3, power_5, power_sum);
+    #endif
+    
+    int i, *order;
+    int power_53 = power_5+power_3;
+    order = (int *) malloc(power_sum*sizeof(int));
+    for (i=0;i<power_5;i++)				order[i]=5;
+    for (i=power_5;i<power_53;i++)		order[i]=3;
+    for (i=power_53;i<power_sum;i++)	order[i]=2;
+    
+    /* FFT */
+    
+    /* bit reverse */
+    
+    int p,q;
+    int step,gate,add;
+	double t, *copy_re, *copy_im;
+	copy_re = (double *) malloc(N*sizeof(double));
+	copy_im = (double *) malloc(N*sizeof(double));
+	#pragma omp parallel for
+	for(i=0;i<N;i++)
+	{
+		copy_re[i] = x_re[i];
+		copy_im[i] = x_im[i];
+	}
+	
+    step = N/order[0];
+    q = step;			// first change
+    for(p=1;p<N-1;p++)
+    {
+		// change value
+	    x_re[p] = copy_re[q];
+	    x_im[p] = copy_im[q];
+        
+        // compute next place
+        i = 0;
+        add = step;
+        gate = (order[i++]-1)*add;
+        while(q >= gate && gate > 0)
+        {
+            #if DEBUG
+            printf("q=%d,gate=%d,add=%d,i=%d\n",q,gate,add,i);
+			printf("order[i]=%d\n",order[i]);
+            #endif
+            q = q-gate;
+            add = add/order[i];
+            gate = (order[i++]-1)*add;
+        }
+        q = q+add;
+    }
+    
+	/* butterfly */
+	
+    int k, m, s;
+	int A, B, C, D, E, M;
+	double w_re, w_im, w_N_re, w_N_im;
+	double tA_re, tB_re, tC_re, tD_re, tE_re;
+	double tA_im, tB_im, tC_im, tD_im, tE_im;
+	double tw_re, tw_im;
+	
+	double sqrt3_2 = sqrt(3)/2.0;;
+	double cos2pi_5 = cos(2.0*M_PI/5.0);
+	double sin2pi_5 = sin(2.0*M_PI/5.0);
+	double cos4pi_5 = cos(4.0*M_PI/5.0);
+	double sin4pi_5 = sin(4.0*M_PI/5.0);
+	
+	m = 1;
+	s = 1;
+	for(i=0;i<power_5;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		#pragma omp parallel for private(k,A,B,C,D,E,tA_re,tB_re,tC_re,tD_re,tE_re,tA_im,tB_im,tC_im,tD_im,tE_im,tw_re,tw_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			C = B + m;
+			D = C + m;
+			E = D + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+			
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			tw_re = copy_re[k]*copy_re[k] - copy_im[k]*copy_im[k];
+			tw_im = 2*copy_re[k]*copy_im[k];
+			
+			tC_re = tw_re*x_re[C] - tw_im*x_im[C];
+			tC_im = tw_re*x_im[C] + tw_im*x_re[C];
+			
+			t = tw_re;
+			tw_re = tw_re*copy_re[k] - tw_im*copy_im[k];
+			tw_im = t    *copy_im[k] + tw_im*copy_re[k];
+			
+			tD_re = tw_re*x_re[D] - tw_im*x_im[D];
+			tD_im = tw_re*x_im[D] + tw_im*x_re[D];
+			
+			t = tw_re;
+			tw_re = tw_re*copy_re[k] - tw_im*copy_im[k];
+			tw_im = t    *copy_im[k] + tw_im*copy_re[k];
+			
+			tE_re = tw_re*x_re[E] - tw_im*x_im[E];
+			tE_im = tw_re*x_im[E] + tw_im*x_re[E];
+
+			x_re[A] = tA_re + tB_re + tC_re + tD_re + tE_re;
+			x_re[B] = tA_re + cos2pi_5*(tB_re+tE_re) + sin2pi_5*(tB_im-tE_im) + cos4pi_5*(tC_re+tD_re) + sin4pi_5*(tC_im-tD_im);
+			x_re[C] = tA_re + cos4pi_5*(tB_re+tE_re) + sin4pi_5*(tB_im-tE_im) + cos2pi_5*(tC_re+tD_re) + sin2pi_5*(tD_im-tC_im); 
+			x_re[D] = tA_re + cos4pi_5*(tB_re+tE_re) + sin4pi_5*(tE_im-tB_im) + cos2pi_5*(tC_re+tD_re) + sin2pi_5*(tC_im-tD_im);
+			x_re[E] = tA_re + cos2pi_5*(tB_re+tE_re) + sin2pi_5*(tE_im-tB_im) + cos4pi_5*(tC_re+tD_re) + sin4pi_5*(tD_im-tC_im);
+			
+			x_im[A] = tA_im + tB_im + tC_im + tD_im + tE_im;
+			x_im[B] = tA_im + cos2pi_5*(tB_im+tE_im) + sin2pi_5*(tE_re-tB_re) + cos4pi_5*(tC_im+tD_im) + sin4pi_5*(tD_re-tC_re);
+			x_im[C] = tA_im + cos4pi_5*(tB_im+tE_im) + sin4pi_5*(tE_re-tB_re) + cos2pi_5*(tC_im+tD_im) + sin2pi_5*(tC_re-tD_re);
+			x_im[D] = tA_im + cos4pi_5*(tB_im+tE_im) + sin4pi_5*(tB_re-tE_re) + cos2pi_5*(tC_im+tD_im) + sin2pi_5*(tD_re-tC_re);
+			x_im[E] = tA_im + cos2pi_5*(tB_im+tE_im) + sin2pi_5*(tB_re-tE_re) + cos4pi_5*(tC_im+tD_im) + sin4pi_5*(tC_re-tD_re);
+		}
+		m *= order[i];
+	}
+	for(i=power_5;i<power_53;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		#pragma omp parallel for private(k,A,B,C,tA_re,tB_re,tC_re,tA_im,tB_im,tC_im,tw_re,tw_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			C = B + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+					
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			tw_re = copy_re[k]*copy_re[k] - copy_im[k]*copy_im[k];
+			tw_im = 2*copy_re[k]*copy_im[k];
+						
+			tC_re = tw_re*x_re[C] - tw_im*x_im[C];
+			tC_im = tw_re*x_im[C] + tw_im*x_re[C];
+					
+			x_re[A] = tA_re + tB_re + tC_re;
+			x_re[B] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tB_im-tC_im);
+			x_re[C] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tC_im-tB_im);
+					
+			x_im[A] = tA_im + tB_im + tC_im;
+			x_im[B] = tA_im + sqrt3_2*(tC_re-tB_re) - 0.5*(tB_im+tC_im);
+			x_im[C] = tA_im + sqrt3_2*(tB_re-tC_re) - 0.5*(tB_im+tC_im);
+		}
+		m *= order[i];
+	}
+	for(i=power_53;i<power_sum;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		#pragma omp parallel for private(k,A,B,tA_re,tB_re,tA_im,tB_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+					
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			x_re[A] = tA_re + tB_re;
+			x_re[B] = tA_re - tB_re;
+			
+			x_im[A] = tA_im + tB_im;
+			x_im[B] = tA_im - tB_im;
+		}
+		m *= order[i];
+	}
+	
+    /* FINISH */
+    
+    return 0;
+}
+
+
+/* Fast Fourier Transform (parallel) (separated) */
+
+int bit_reverse(double *x_re, double *x_im, int N, int *order)
 {
     int i,p,q;
     int step,gate,add;
 	double t, *copy_re, *copy_im;
 	copy_re = (double *) malloc(N*sizeof(double));
 	copy_im = (double *) malloc(N*sizeof(double));
+	#pragma omp parallel for
 	for(i=0;i<N;i++)
 	{
 		copy_re[i] = x_re[i];
@@ -26,7 +259,6 @@ int bit_reverse(double *x_re, double *x_im, int N, int power_2, int power_3, int
     for(p=1;p<N-1;p++)
     {
 		// change value
-    	//printf("%d -> %d\n", p,q);
 	    x_re[p] = copy_re[q];
 	    x_im[p] = copy_im[q];
         
@@ -49,122 +281,234 @@ int bit_reverse(double *x_re, double *x_im, int N, int power_2, int power_3, int
 	return 0;
 }
 
-int bit_reverse0(double *x_re, double *x_im, int N)
+int butterfly(double *x_re, double *x_im, int N, int power_5, int power_53, int power_sum, int *order)
 {
-    int copy_N = N, power_sum = 0;
-    int power_2=0, power_3=0, power_5=0;
-    while(copy_N%2==0){ power_2++; copy_N/=2; }
-    while(copy_N%3==0){ power_3++; copy_N/=3; }
-    while(copy_N%5==0){ power_5++; copy_N/=5; }
-    power_sum = power_2+power_3+power_5;
-    #if DEBUG
-    printf("power_2=%d, power_3=%d, power_5=%d\n", power_2, power_3, power_5);
-    #endif
-    
-    int i;
-    int p,q,temp;
-    int step,gate,add;
-	double t;
-    
-    int value[N];
-    for(i=0;i<N;i++) value[i]=i;
-    
-    int order[power_sum];
-    i=0;
-    while(i<power_5) order[i++]=5;
-    while(i<power_5+power_3) order[i++]=3;
-    while(i<power_sum) order[i++]=2;
-    
-	double copy_re[N], copy_im[N];
-	for(i=0;i<N;i++)
-	{
-		copy_re[i] = x_re[i];
-		copy_im[i] = x_im[i];
-	}
+    int i, k, m, s;
+	int A, B, C, D, E, M;
+	double w_re, w_im, w_N_re, w_N_im;
+	double tA_re, tB_re, tC_re, tD_re, tE_re;
+	double tA_im, tB_im, tC_im, tD_im, tE_im;
+	double tw_re, tw_im;
 	
-    step = N/order[0];
-    q = step;			// first change
-    for(p=1;p<N-1;p++)
-    {
-		// change value
-    	//printf("%d -> %d\n", p,q);
-	    x_re[p] = copy_re[q];
-	    x_im[p] = copy_im[q];
-        
-        // compute next place
-        i = 0;
-        add = step;
-        gate = (order[i++]-1)*add;
-        while(q >= gate && gate > 0)
-        {
-            #if DEBUG
-            printf("q=%d,gate=%d,add=%d,i=%d\n",q,gate,add,i);
-			printf("order[i]=%d\n",order[i]);
-            #endif
-            q = q-gate;
-            add = add/order[i];
-            gate = (order[i++]-1)*add;
-        }
-        q = q+add;
-    }
-	return 0;
-}
-
-int bit_reverse2(double *x_re, double *x_im, int N)
-{
-    int copy_N = N, power_sum = 0;
-    int power_2=0, power_3=0, power_5=0;
-    while(copy_N%2==0){ power_2++; copy_N/=2; }
-    while(copy_N%3==0){ power_3++; copy_N/=3; }
-    while(copy_N%5==0){ power_5++; copy_N/=5; }
-    power_sum = power_2+power_3+power_5;
-    #if DEBUG
-    printf("power_2=%d, power_3=%d, power_5=%d\n", power_2, power_3, power_5);
-    #endif
-    
-    int i;
-    int p,q,temp;
-    int step,gate,add;
-	double t;
-    
-    int value[N];
-    for(i=0;i<N;i++) value[i]=i;
-    
-    int order[power_sum];
-    i=0;
-    while(i<power_5) order[i++]=5;
-    while(i<power_5+power_3) order[i++]=3;
-    while(i<power_sum) order[i++]=2;
-    
-    step = N/order[0];
-    q = step;			// first change
-    for(p=1;p<N-1;p++)
-    {
-		// change value
-    	//printf("%d -> %d\n", p,q);
-    	if (value[q]!=p)
-    	{
-    		i=q;
-	    	if (value[q]!=q)
-			{
-				i=value[q];
-			}
-			// printf("(p,q,i)=(%d,%d,%d)\n",p,q,i);
-			// printf("value[p,q,i]=(%d,%d,%d)\n",value[p],value[q],value[i]);
-			t = x_re[p];
-	        x_re[p] = x_re[i];
-			x_re[i] = t;
-	        t = x_im[p];
-	        x_im[p] = x_im[i];
-			x_im[i] = t;
-			temp = value[p];
-			value[p] = value[q];
-			value[q] = temp;
-			// printf("(p,q,i)=(%d,%d,%d)\n",p,q,i);
-			// printf("value[p,q,i]=(%d,%d,%d)\n",value[p],value[q],value[i]);
-			// for (i=0;i<N;i++) printf("%d ",value[i]);
-			// printf("\n\n");
+	double sqrt3_2 = sqrt(3)/2.0;;
+	double cos2pi_5 = cos(2.0*M_PI/5.0);
+	double sin2pi_5 = sin(2.0*M_PI/5.0);
+	double cos4pi_5 = cos(4.0*M_PI/5.0);
+	double sin4pi_5 = sin(4.0*M_PI/5.0);
+	
+	double t, *copy_re, *copy_im;
+	copy_re = (double *) malloc(N*sizeof(double));
+	copy_im = (double *) malloc(N*sizeof(double));
+	
+	m = 1;
+	s = 1;
+	for(i=0;i<power_5;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
 		}
+		#pragma omp parallel for private(k,A,B,C,D,E,tA_re,tB_re,tC_re,tD_re,tE_re,tA_im,tB_im,tC_im,tD_im,tE_im,tw_re,tw_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			C = B + m;
+			D = C + m;
+			E = D + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+			
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			tw_re = copy_re[k]*copy_re[k] - copy_im[k]*copy_im[k];
+			tw_im = 2*copy_re[k]*copy_im[k];
+			
+			tC_re = tw_re*x_re[C] - tw_im*x_im[C];
+			tC_im = tw_re*x_im[C] + tw_im*x_re[C];
+			
+			t = tw_re;
+			tw_re = tw_re*copy_re[k] - tw_im*copy_im[k];
+			tw_im = t    *copy_im[k] + tw_im*copy_re[k];
+			
+			tD_re = tw_re*x_re[D] - tw_im*x_im[D];
+			tD_im = tw_re*x_im[D] + tw_im*x_re[D];
+			
+			t = tw_re;
+			tw_re = tw_re*copy_re[k] - tw_im*copy_im[k];
+			tw_im = t    *copy_im[k] + tw_im*copy_re[k];
+			
+			tE_re = tw_re*x_re[E] - tw_im*x_im[E];
+			tE_im = tw_re*x_im[E] + tw_im*x_re[E];
+
+			x_re[A] = tA_re + tB_re + tC_re + tD_re + tE_re;
+			x_re[B] = tA_re + cos2pi_5*(tB_re+tE_re) + sin2pi_5*(tB_im-tE_im) + cos4pi_5*(tC_re+tD_re) + sin4pi_5*(tC_im-tD_im);
+			x_re[C] = tA_re + cos4pi_5*(tB_re+tE_re) + sin4pi_5*(tB_im-tE_im) + cos2pi_5*(tC_re+tD_re) + sin2pi_5*(tD_im-tC_im); 
+			x_re[D] = tA_re + cos4pi_5*(tB_re+tE_re) + sin4pi_5*(tE_im-tB_im) + cos2pi_5*(tC_re+tD_re) + sin2pi_5*(tC_im-tD_im);
+			x_re[E] = tA_re + cos2pi_5*(tB_re+tE_re) + sin2pi_5*(tE_im-tB_im) + cos4pi_5*(tC_re+tD_re) + sin4pi_5*(tD_im-tC_im);
+			
+			x_im[A] = tA_im + tB_im + tC_im + tD_im + tE_im;
+			x_im[B] = tA_im + cos2pi_5*(tB_im+tE_im) + sin2pi_5*(tE_re-tB_re) + cos4pi_5*(tC_im+tD_im) + sin4pi_5*(tD_re-tC_re);
+			x_im[C] = tA_im + cos4pi_5*(tB_im+tE_im) + sin4pi_5*(tE_re-tB_re) + cos2pi_5*(tC_im+tD_im) + sin2pi_5*(tC_re-tD_re);
+			x_im[D] = tA_im + cos4pi_5*(tB_im+tE_im) + sin4pi_5*(tB_re-tE_re) + cos2pi_5*(tC_im+tD_im) + sin2pi_5*(tD_re-tC_re);
+			x_im[E] = tA_im + cos2pi_5*(tB_im+tE_im) + sin2pi_5*(tB_re-tE_re) + cos4pi_5*(tC_im+tD_im) + sin4pi_5*(tC_re-tD_re);
+		}
+		m *= order[i];
+	}
+	for(i=power_5;i<power_53;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		#pragma omp parallel for private(k,A,B,C,tA_re,tB_re,tC_re,tA_im,tB_im,tC_im,tw_re,tw_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			C = B + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+					
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			tw_re = copy_re[k]*copy_re[k] - copy_im[k]*copy_im[k];
+			tw_im = 2*copy_re[k]*copy_im[k];
+						
+			tC_re = tw_re*x_re[C] - tw_im*x_im[C];
+			tC_im = tw_re*x_im[C] + tw_im*x_re[C];
+					
+			x_re[A] = tA_re + tB_re + tC_re;
+			x_re[B] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tB_im-tC_im);
+			x_re[C] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tC_im-tB_im);
+					
+			x_im[A] = tA_im + tB_im + tC_im;
+			x_im[B] = tA_im + sqrt3_2*(tC_re-tB_re) - 0.5*(tB_im+tC_im);
+			x_im[C] = tA_im + sqrt3_2*(tB_re-tC_re) - 0.5*(tB_im+tC_im);
+		}
+		m *= order[i];
+	}
+	for(i=power_53;i<power_sum;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			copy_re[k] = w_re;
+			copy_im[k] = w_im;
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		#pragma omp parallel for private(k,A,B,tA_re,tB_re,tA_im,tB_im)
+		for(M=0;M<N/order[i];++M)
+		{
+			k = M % m;
+			A = (M / m)*s + k;
+			B = A + m;
+			
+			tA_re = x_re[A];
+			tA_im = x_im[A];
+					
+			tB_re = copy_re[k]*x_re[B] - copy_im[k]*x_im[B];
+			tB_im = copy_re[k]*x_im[B] + copy_im[k]*x_re[B];
+			
+			x_re[A] = tA_re + tB_re;
+			x_re[B] = tA_re - tB_re;
+			
+			x_im[A] = tA_im + tB_im;
+			x_im[B] = tA_im - tB_im;
+		}
+		m *= order[i];
+	}
+	return 0;
+}
+
+int FFT_general_separated(double *x_re, double *x_im, int N)
+{
+    int copy_N = N, power_sum = 0;
+    int power_2=0, power_3=0, power_5=0;
+    while(copy_N%2==0){ power_2++; copy_N/=2; }
+    while(copy_N%3==0){ power_3++; copy_N/=3; }
+    while(copy_N%5==0){ power_5++; copy_N/=5; }
+    power_sum = power_2 + power_3 + power_5;
+    #if DEBUG
+    printf("power_2=%d, power_3=%d, power_5=%d, power_sum=%d\n", power_2, power_3, power_5, power_sum);
+    #endif
+    
+    int i, *order;
+    int power_53 = power_5+power_3;
+    order = (int *) malloc(power_sum*sizeof(int));
+    for (i=0;i<power_5;i++)				order[i]=5;
+    for (i=power_5;i<power_53;i++)		order[i]=3;
+    for (i=power_53;i<power_sum;i++)	order[i]=2;
+    
+    /* FFT */
+    
+    bit_reverse(x_re, x_im, N, order);
+    
+	butterfly  (x_re, x_im, N, power_5, power_53, power_sum, order);
+	
+    /* FINISH */
+    
+    return 0;
+}
+
+
+/* Fast Fourier Transform (not parallel) (separated) */
+
+int bit_reverse_np(double *x_re, double *x_im, int N, int *order)
+{
+    int i,p,q;
+    int step,gate,add;
+	double t, *copy_re, *copy_im;
+	copy_re = (double *) malloc(N*sizeof(double));
+	copy_im = (double *) malloc(N*sizeof(double));
+	clock_t t1, t2;
+	t1 = clock();
+	for(i=0;i<N;i++)
+	{
+		copy_re[i] = x_re[i];
+		copy_im[i] = x_im[i];
+	}
+	t2 = clock();
+	printf("bit time = %f\n",1.0*(t2-t1)/CLOCKS_PER_SEC);
+	
+    step = N/order[0];
+    q = step;			// first change
+    for(p=1;p<N-1;p++)
+    {
+		// change value
+    	//printf("%d -> %d\n", p,q);
+	    x_re[p] = copy_re[q];
+	    x_im[p] = copy_im[q];
         
         // compute next place
         i = 0;
@@ -184,6 +528,227 @@ int bit_reverse2(double *x_re, double *x_im, int N)
     }
 	return 0;
 }
+
+int butterfly_np(double *x_re, double *x_im, int N, int power_5, int power_53, int power_sum, int *order)
+{
+    int i, k, m, s;
+	int A, B, C, D, E;
+	double w_re, w_im, w_N_re, w_N_im, t;
+	double tA_re, tB_re, tC_re, tD_re, tE_re;
+	double tA_im, tB_im, tC_im, tD_im, tE_im;
+	double tw_re, tw_im;
+	
+	double sqrt3_2 = sqrt(3)/2.0;
+	double cos2pi_5 = cos(2.0*M_PI/5.0);
+	double sin2pi_5 = sin(2.0*M_PI/5.0);
+	double cos4pi_5 = cos(4.0*M_PI/5.0);
+	double sin4pi_5 = sin(4.0*M_PI/5.0);
+	
+	m = 1;
+	s = 1;
+	for(i=0;i<power_5;i++)
+	{
+		s = s*order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			for(A=k;A<N;A+=order[i]*m)
+			{
+				B = A + m;
+				C = A + 2*m;
+				D = A + 3*m;
+				E = A + 4*m;
+				
+				t = x_re[B];
+				x_re[B] = w_re*x_re[B] - w_im*x_im[B];
+				x_im[B] = w_re*x_im[B] + w_im*t;
+				
+				tw_re = w_re*w_re - w_im*w_im;
+				tw_im = w_re*w_im + w_im*w_re;
+				
+				t = x_re[C];
+				x_re[C] = tw_re*x_re[C] - tw_im*x_im[C];
+				x_im[C] = tw_re*x_im[C] + tw_im*t;
+				
+				t = tw_re;
+				tw_re = w_re*tw_re - w_im*tw_im;
+				tw_im = w_re*tw_im + w_im*t;
+				
+				t = x_re[D];
+				x_re[D] = tw_re*x_re[D] - tw_im*x_im[D];
+				x_im[D] = tw_re*x_im[D] + tw_im*t;
+				
+				t = tw_re;
+				tw_re = w_re*tw_re - w_im*tw_im;
+				tw_im = w_re*tw_im + w_im*t;
+				
+				t = x_re[E];
+				x_re[E] = tw_re*x_re[E] - tw_im*x_im[E];
+				x_im[E] = tw_re*x_im[E] + tw_im*t;
+				
+				tA_re = x_re[A] + x_re[B] + x_re[C] + x_re[D] + x_re[E];
+				tB_re = x_re[A] + cos2pi_5*x_re[B] + sin2pi_5*x_im[B]
+								+ cos4pi_5*x_re[C] + sin4pi_5*x_im[C]
+								+ cos4pi_5*x_re[D] - sin4pi_5*x_im[D]
+								+ cos2pi_5*x_re[E] - sin2pi_5*x_im[E];
+				tC_re = x_re[A] + cos4pi_5*x_re[B] + sin4pi_5*x_im[B]
+								+ cos2pi_5*x_re[C] - sin2pi_5*x_im[C]
+								+ cos2pi_5*x_re[D] + sin2pi_5*x_im[D]
+								+ cos4pi_5*x_re[E] - sin4pi_5*x_im[E];
+				tD_re = x_re[A] + cos4pi_5*x_re[B] - sin4pi_5*x_im[B]
+								+ cos2pi_5*x_re[C] + sin2pi_5*x_im[C]
+								+ cos2pi_5*x_re[D] - sin2pi_5*x_im[D]
+								+ cos4pi_5*x_re[E] + sin4pi_5*x_im[E];
+				tE_re = x_re[A] + cos2pi_5*x_re[B] - sin2pi_5*x_im[B]
+								+ cos4pi_5*x_re[C] - sin4pi_5*x_im[C]
+								+ cos4pi_5*x_re[D] + sin4pi_5*x_im[D]
+								+ cos2pi_5*x_re[E] + sin2pi_5*x_im[E];
+				
+				tA_im = x_im[A] + x_im[B] + x_im[C] + x_im[D] + x_im[E];
+				tB_im = x_im[A] + cos2pi_5*x_im[B] - sin2pi_5*x_re[B]
+								+ cos4pi_5*x_im[C] - sin4pi_5*x_re[C]
+								+ cos4pi_5*x_im[D] + sin4pi_5*x_re[D]
+								+ cos2pi_5*x_im[E] + sin2pi_5*x_re[E];
+				tC_im = x_im[A] + cos4pi_5*x_im[B] - sin4pi_5*x_re[B]
+								+ cos2pi_5*x_im[C] + sin2pi_5*x_re[C]
+								+ cos2pi_5*x_im[D] - sin2pi_5*x_re[D]
+								+ cos4pi_5*x_im[E] + sin4pi_5*x_re[E];
+				tD_im = x_im[A] + cos4pi_5*x_im[B] + sin4pi_5*x_re[B]
+								+ cos2pi_5*x_im[C] - sin2pi_5*x_re[C]
+								+ cos2pi_5*x_im[D] + sin2pi_5*x_re[D]
+								+ cos4pi_5*x_im[E] - sin4pi_5*x_re[E];
+				x_im[E]=x_im[A] + cos2pi_5*x_im[B] + sin2pi_5*x_re[B]
+								+ cos4pi_5*x_im[C] + sin4pi_5*x_re[C]
+								+ cos4pi_5*x_im[D] - sin4pi_5*x_re[D]
+								+ cos2pi_5*x_im[E] - sin2pi_5*x_re[E];
+				#if DEBUG
+				printf("SS. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
+				printf("SS. %f,%f,%f,%f,%f\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
+				#endif
+				x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re; x_re[D] = tD_re; x_re[E] = tE_re;
+				x_im[A] = tA_im; x_im[B] = tB_im; x_im[C] = tC_im; x_im[D] = tD_im;
+				#if DEBUG
+				printf("EE. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
+				printf("EE. %f,%f,%f,%f,%f\n\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
+				#endif
+			}
+			t    = w_re; 
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		m = m * order[i];
+	}
+	for(i=power_5;i<power_53;i++)
+	{
+		s *= order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			tw_re = w_re*w_re - w_im*w_im;
+			tw_im = w_re*w_im + w_im*w_re;
+			for(A=k;A<N;A+=order[i]*m)
+			{
+				B = A + m;
+				C = A + 2*m;
+				
+				tA_re = x_re[A];
+				tA_im = x_im[A];
+				
+				tB_re = w_re*x_re[B] - w_im*x_im[B];
+				tB_im = w_re*x_im[B] + w_im*x_re[B];
+				
+				tC_re = tw_re*x_re[C] - tw_im*x_im[C];
+				tC_im = tw_re*x_im[C] + tw_im*x_re[C];
+				
+				x_re[A] = tA_re + tB_re + tC_re;
+				x_re[B] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tB_im-tC_im);
+				x_re[C] = tA_re - 0.5*(tB_re+tC_re) + sqrt3_2*(tC_im-tB_im);
+				
+				x_im[A] = tA_im + tB_im + tC_im;
+				x_im[B] = tA_im + sqrt3_2*(tC_re-tB_re) - 0.5*(tB_im+tC_im);
+				x_im[C] = tA_im + sqrt3_2*(tB_re-tC_re) - 0.5*(tB_im+tC_im);
+			}
+			t    = w_re;
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		m *= order[i];
+	}
+	for(i=power_53;i<power_sum;i++)
+	{
+		s = s*order[i];
+		w_re = 1.0;
+		w_im = 0.0;
+		w_N_re = cos(2.0*M_PI/s);
+		w_N_im = -sin(2.0*M_PI/s);
+		for(k=0;k<m;++k)
+		{
+			for(A=k;A<N;A+=order[i]*m)
+			{
+				B = A + m;
+				
+				tA_re = x_re[A];
+				tA_im = x_im[A];
+				
+				tB_re = w_re*x_re[B] - w_im*x_im[B];
+				tB_im = w_re*x_im[B] + w_im*x_re[B];
+				
+				x_re[A] = tA_re + tB_re;
+				x_re[B] = tA_re - tB_re;
+				
+				x_im[A] = tA_im + tB_im;
+				x_im[B] = tA_im - tB_im;
+			}
+			t    = w_re; 
+			w_re = w_N_re*w_re - w_N_im*w_im;
+			w_im = w_N_re*w_im + w_N_im*t;
+		}
+		m = m * order[i];
+	}
+	return 0;
+}
+
+int FFT_general_np_separated(double *x_re, double *x_im, int N)
+{
+    int copy_N = N, power_sum = 0;
+    int power_2=0, power_3=0, power_5=0;
+    while(copy_N%2==0){ power_2++; copy_N/=2; }
+    while(copy_N%3==0){ power_3++; copy_N/=3; }
+    while(copy_N%5==0){ power_5++; copy_N/=5; }
+    power_sum = power_2 + power_3 + power_5;
+    #if DEBUG
+    printf("power_2=%d, power_3=%d, power_5=%d, power_sum=%d\n", power_2, power_3, power_5, power_sum);
+    #endif
+    
+    int i, *order;
+    int power_53 = power_5+power_3;
+    order = (int *) malloc(power_sum*sizeof(int));
+    for (i=0;i<power_5;i++)				order[i]=5;
+    for (i=power_5;i<power_53;i++)		order[i]=3;
+    for (i=power_53;i<power_sum;i++)	order[i]=2;
+    
+    /* FFT */
+	clock_t t1, t2, t3;
+	t1 = clock();
+    bit_reverse(x_re, x_im, N, order);
+	t2 = clock();
+	butterfly  (x_re, x_im, N, power_5, power_53, power_sum, order);
+	t3 = clock();
+	printf("time1 = %f\n",(t2-t1)/(double) CLOCKS_PER_SEC);
+	printf("time2 = %f\n",(t3-t2)/(double) CLOCKS_PER_SEC);
+    /* FINISH */
+    
+    return 0;
+}
+
+
+/* other bitreverse */
 
 int rearrange(double *x_re, double *x_im, int N)
 {
@@ -317,582 +882,3 @@ int rearrange(double *x_re, double *x_im, int N)
     return 0;
 }
 
-
-/* butterfly */
-
-int butterfly(double *x_re, double *x_im, int N, int power_2, int power_3, int power_5, int power_sum, int *order)
-{
-    int i, j, k, m, s;
-	int A, B, C, D, E;
-	double w_re, w_im, w_N_re, w_N_im, t;
-	double tA_re, tB_re, tC_re, tD_re, tE_re;
-	double tA_im, tB_im, tC_im, tD_im, tE_im;
-	double tA, tB, tC, tD, tE;
-	double tw_re, tw_im;
-	
-	double sqrt3_2 = sqrt(3)/2.0;
-	double cos2pi_5 = cos(2.0*M_PI/5.0);
-	double sin2pi_5 = sin(2.0*M_PI/5.0);
-	double cos4pi_5 = cos(4.0*M_PI/5.0);
-	double sin4pi_5 = sin(4.0*M_PI/5.0);
-	
-	m = 1;
-	s = 1;
-	for(i=0;i<power_sum;i++)
-	{
-		s = s*order[i];
-		w_re = 1.0;
-		w_im = 0.0;
-		w_N_re = cos(2.0*M_PI/s);
-		w_N_im = -sin(2.0*M_PI/s);
-		for(k=0;k<m;++k)
-		{
-			for(A=k;A<N;A+=order[i]*m)
-			{
-				switch (order[i]){
-					case 2:
-						B = A + m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						t = x_re[A];
-						x_re[A] = x_re[A] + x_re[B];
-						x_re[B] = t       - x_re[B]; 
-						t = x_im[A];
-						x_im[A] = x_im[A] + x_im[B];
-						x_im[B] = t       - x_im[B];
-						break;
-						
-			    	case 3:
-						B = A + m;
-						C = A + 2*m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						t = x_re[C];
-						x_re[C] = (w_re*w_re - w_im*w_im)*x_re[C] - (w_re*w_im + w_im*w_re)*x_im[C];
-						x_im[C] = (w_re*w_re - w_im*w_im)*x_im[C] + (w_re*w_im + w_im*w_re)*t;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C];
-						tB_re = x_re[A] - 0.5*x_re[B] + sqrt3_2*x_im[B]
-										- 0.5*x_re[C] - sqrt3_2*x_im[C];
-						tC_re = x_re[A] - 0.5*x_re[B] - sqrt3_2*x_im[B]
-										- 0.5*x_re[C] + sqrt3_2*x_im[C];
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C];
-						tB_im = x_im[A] - sqrt3_2*x_re[B] - 0.5*x_im[B]
-										+ sqrt3_2*x_re[C] - 0.5*x_im[C];
-						x_im[C]=x_im[A] + sqrt3_2*x_re[B] - 0.5*x_im[B]
-										- sqrt3_2*x_re[C] - 0.5*x_im[C];
-						
-						#if DEBUG
-						printf("SS. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("SS. %f,%f,%f\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re;
-						x_im[A] = tA_im; x_im[B] = tB_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("EE. %f,%f,%f\n\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						break;
-						
-				    case 5:
-						B = A + m;
-						C = A + 2*m;
-						D = A + 3*m;
-						E = A + 4*m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						tw_re = w_re*w_re - w_im*w_im;
-						tw_im = w_re*w_im + w_im*w_re;
-						
-						t = x_re[C];
-						x_re[C] = tw_re*x_re[C] - tw_im*x_im[C];
-						x_im[C] = tw_re*x_im[C] + tw_im*t;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						t = x_re[D];
-						x_re[D] = tw_re*x_re[D] - tw_im*x_im[D];
-						x_im[D] = tw_re*x_im[D] + tw_im*t;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						t = x_re[E];
-						x_re[E] = tw_re*x_re[E] - tw_im*x_im[E];
-						x_im[E] = tw_re*x_im[E] + tw_im*t;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C] + x_re[D] + x_re[E];
-						tB_re = x_re[A] + cos2pi_5*x_re[B] + sin2pi_5*x_im[B]
-										+ cos4pi_5*x_re[C] + sin4pi_5*x_im[C]
-										+ cos4pi_5*x_re[D] - sin4pi_5*x_im[D]
-										+ cos2pi_5*x_re[E] - sin2pi_5*x_im[E];
-						tC_re = x_re[A] + cos4pi_5*x_re[B] + sin4pi_5*x_im[B]
-										+ cos2pi_5*x_re[C] - sin2pi_5*x_im[C]
-										+ cos2pi_5*x_re[D] + sin2pi_5*x_im[D]
-										+ cos4pi_5*x_re[E] - sin4pi_5*x_im[E];
-						tD_re = x_re[A] + cos4pi_5*x_re[B] - sin4pi_5*x_im[B]
-										+ cos2pi_5*x_re[C] + sin2pi_5*x_im[C]
-										+ cos2pi_5*x_re[D] - sin2pi_5*x_im[D]
-										+ cos4pi_5*x_re[E] + sin4pi_5*x_im[E];
-						tE_re = x_re[A] + cos2pi_5*x_re[B] - sin2pi_5*x_im[B]
-										+ cos4pi_5*x_re[C] - sin4pi_5*x_im[C]
-										+ cos4pi_5*x_re[D] + sin4pi_5*x_im[D]
-										+ cos2pi_5*x_re[E] + sin2pi_5*x_im[E];
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C] + x_im[D] + x_im[E];
-						tB_im = x_im[A] + cos2pi_5*x_im[B] - sin2pi_5*x_re[B]
-										+ cos4pi_5*x_im[C] - sin4pi_5*x_re[C]
-										+ cos4pi_5*x_im[D] + sin4pi_5*x_re[D]
-										+ cos2pi_5*x_im[E] + sin2pi_5*x_re[E];
-						tC_im = x_im[A] + cos4pi_5*x_im[B] - sin4pi_5*x_re[B]
-										+ cos2pi_5*x_im[C] + sin2pi_5*x_re[C]
-										+ cos2pi_5*x_im[D] - sin2pi_5*x_re[D]
-										+ cos4pi_5*x_im[E] + sin4pi_5*x_re[E];
-						tD_im = x_im[A] + cos4pi_5*x_im[B] + sin4pi_5*x_re[B]
-										+ cos2pi_5*x_im[C] - sin2pi_5*x_re[C]
-										+ cos2pi_5*x_im[D] + sin2pi_5*x_re[D]
-										+ cos4pi_5*x_im[E] - sin4pi_5*x_re[E];
-						x_im[E]=x_im[A] + cos2pi_5*x_im[B] + sin2pi_5*x_re[B]
-										+ cos4pi_5*x_im[C] + sin4pi_5*x_re[C]
-										+ cos4pi_5*x_im[D] - sin4pi_5*x_re[D]
-										+ cos2pi_5*x_im[E] - sin2pi_5*x_re[E];
-						#if DEBUG
-						printf("SS. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("SS. %f,%f,%f,%f,%f\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re; x_re[D] = tD_re; x_re[E] = tE_re;
-						x_im[A] = tA_im; x_im[B] = tB_im; x_im[C] = tC_im; x_im[D] = tD_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("EE. %f,%f,%f,%f,%f\n\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						break;
-				    default:
-						printf("error\n");
-				}
-			}
-			t    = w_re; 
-			w_re = w_N_re*w_re - w_N_im*w_im;
-			w_im = w_N_re*w_im + w_N_im*t;
-		}
-		m = m * order[i];
-	}
-	
-	return 0;
-}
-
-int butterfly0(double *x_re, double *x_im, int N)
-{
-    int copy_N = N, power_sum = 0;
-    int power_2=0, power_3=0, power_5=0;
-    while(copy_N%2==0){ power_2++; copy_N/=2; }
-    while(copy_N%3==0){ power_3++; copy_N/=3; }
-    while(copy_N%5==0){ power_5++; copy_N/=5; }
-    power_sum = power_2+power_3+power_5;
-    #if DEBUG
-    printf("power_2=%d, power_3=%d, power_5=%d\n", power_2, power_3, power_5);
-    #endif
-    
-    int i, j, order[power_sum];
-    i=0;
-    while(i<power_5) order[i++]=5;
-    while(i<power_5+power_3) order[i++]=3;
-    while(i<power_sum) order[i++]=2;
-    
-    int k, m, s;
-	int A, B, C, D, E;
-	double w_re, w_im, w_N_re, w_N_im, t;
-	double tA_re, tB_re, tC_re, tD_re, tE_re;
-	double tA_im, tB_im, tC_im, tD_im, tE_im;
-	double tA, tB, tC, tD, tE;
-	double tw_re, tw_im;
-	
-	double sqrt3_2 = sqrt(3)/2.0;
-	double cos2pi_5 = cos(2.0*M_PI/5.0);
-	double sin2pi_5 = sin(2.0*M_PI/5.0);
-	double cos4pi_5 = cos(4.0*M_PI/5.0);
-	double sin4pi_5 = sin(4.0*M_PI/5.0);
-	
-	m = 1;
-	s = 1;
-	for(i=0;i<power_sum;i++)
-	{
-		s = s*order[i];
-		w_re = 1.0;
-		w_im = 0.0;
-		w_N_re = cos(2.0*M_PI/s);
-		w_N_im = -sin(2.0*M_PI/s);
-		for(k=0;k<m;++k)
-		{
-			for(A=k;A<N;A+=order[i]*m)
-			{
-				switch (order[i]){
-					case 2:
-						B = A + m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						t = x_re[A];
-						x_re[A] = x_re[A] + x_re[B];
-						x_re[B] = t       - x_re[B]; 
-						t = x_im[A];
-						x_im[A] = x_im[A] + x_im[B];
-						x_im[B] = t       - x_im[B];
-						break;
-						
-			    	case 3:
-						B = A + m;
-						C = A + 2*m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						t = x_re[C];
-						x_re[C] = (w_re*w_re - w_im*w_im)*x_re[C] - (w_re*w_im + w_im*w_re)*x_im[C];
-						x_im[C] = (w_re*w_re - w_im*w_im)*x_im[C] + (w_re*w_im + w_im*w_re)*t;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C];
-						tB_re = x_re[A] - 0.5*x_re[B] + sqrt3_2*x_im[B]
-										- 0.5*x_re[C] - sqrt3_2*x_im[C];
-						tC_re = x_re[A] - 0.5*x_re[B] - sqrt3_2*x_im[B]
-										- 0.5*x_re[C] + sqrt3_2*x_im[C];
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C];
-						tB_im = x_im[A] - sqrt3_2*x_re[B] - 0.5*x_im[B]
-										+ sqrt3_2*x_re[C] - 0.5*x_im[C];
-						x_im[C]=x_im[A] + sqrt3_2*x_re[B] - 0.5*x_im[B]
-										- sqrt3_2*x_re[C] - 0.5*x_im[C];
-						
-						#if DEBUG
-						printf("SS. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("SS. %f,%f,%f\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re;
-						x_im[A] = tA_im; x_im[B] = tB_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("EE. %f,%f,%f\n\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						break;
-						
-				    case 5:
-						B = A + m;
-						C = A + 2*m;
-						D = A + 3*m;
-						E = A + 4*m;
-						
-						t = x_re[B];
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						tw_re = w_re*w_re - w_im*w_im;
-						tw_im = w_re*w_im + w_im*w_re;
-						
-						t = x_re[C];
-						x_re[C] = tw_re*x_re[C] - tw_im*x_im[C];
-						x_im[C] = tw_re*x_im[C] + tw_im*t;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						t = x_re[D];
-						x_re[D] = tw_re*x_re[D] - tw_im*x_im[D];
-						x_im[D] = tw_re*x_im[D] + tw_im*t;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						t = x_re[E];
-						x_re[E] = tw_re*x_re[E] - tw_im*x_im[E];
-						x_im[E] = tw_re*x_im[E] + tw_im*t;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C] + x_re[D] + x_re[E];
-						tB_re = x_re[A] + cos2pi_5*x_re[B] + sin2pi_5*x_im[B]
-										+ cos4pi_5*x_re[C] + sin4pi_5*x_im[C]
-										+ cos4pi_5*x_re[D] - sin4pi_5*x_im[D]
-										+ cos2pi_5*x_re[E] - sin2pi_5*x_im[E];
-						tC_re = x_re[A] + cos4pi_5*x_re[B] + sin4pi_5*x_im[B]
-										+ cos2pi_5*x_re[C] - sin2pi_5*x_im[C]
-										+ cos2pi_5*x_re[D] + sin2pi_5*x_im[D]
-										+ cos4pi_5*x_re[E] - sin4pi_5*x_im[E];
-						tD_re = x_re[A] + cos4pi_5*x_re[B] - sin4pi_5*x_im[B]
-										+ cos2pi_5*x_re[C] + sin2pi_5*x_im[C]
-										+ cos2pi_5*x_re[D] - sin2pi_5*x_im[D]
-										+ cos4pi_5*x_re[E] + sin4pi_5*x_im[E];
-						tE_re = x_re[A] + cos2pi_5*x_re[B] - sin2pi_5*x_im[B]
-										+ cos4pi_5*x_re[C] - sin4pi_5*x_im[C]
-										+ cos4pi_5*x_re[D] + sin4pi_5*x_im[D]
-										+ cos2pi_5*x_re[E] + sin2pi_5*x_im[E];
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C] + x_im[D] + x_im[E];
-						tB_im = x_im[A] + cos2pi_5*x_im[B] - sin2pi_5*x_re[B]
-										+ cos4pi_5*x_im[C] - sin4pi_5*x_re[C]
-										+ cos4pi_5*x_im[D] + sin4pi_5*x_re[D]
-										+ cos2pi_5*x_im[E] + sin2pi_5*x_re[E];
-						tC_im = x_im[A] + cos4pi_5*x_im[B] - sin4pi_5*x_re[B]
-										+ cos2pi_5*x_im[C] + sin2pi_5*x_re[C]
-										+ cos2pi_5*x_im[D] - sin2pi_5*x_re[D]
-										+ cos4pi_5*x_im[E] + sin4pi_5*x_re[E];
-						tD_im = x_im[A] + cos4pi_5*x_im[B] + sin4pi_5*x_re[B]
-										+ cos2pi_5*x_im[C] - sin2pi_5*x_re[C]
-										+ cos2pi_5*x_im[D] + sin2pi_5*x_re[D]
-										+ cos4pi_5*x_im[E] - sin4pi_5*x_re[E];
-						x_im[E]=x_im[A] + cos2pi_5*x_im[B] + sin2pi_5*x_re[B]
-										+ cos4pi_5*x_im[C] + sin4pi_5*x_re[C]
-										+ cos4pi_5*x_im[D] - sin4pi_5*x_re[D]
-										+ cos2pi_5*x_im[E] - sin2pi_5*x_re[E];
-						#if DEBUG
-						printf("SS. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("SS. %f,%f,%f,%f,%f\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re; x_re[D] = tD_re; x_re[E] = tE_re;
-						x_im[A] = tA_im; x_im[B] = tB_im; x_im[C] = tC_im; x_im[D] = tD_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("EE. %f,%f,%f,%f,%f\n\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						break;
-				    default:
-						printf("error\n");
-				}
-			}
-			t    = w_re; 
-			w_re = w_N_re*w_re - w_N_im*w_im;
-			w_im = w_N_re*w_im + w_N_im*t;
-		}
-		m = m * order[i];
-	}
-	
-	return 0;
-}
-
-int butterfly2(double *x_re, double *x_im, int N)
-{
-    int copy_N = N, power_sum = 0;
-    int power_2=0, power_3=0, power_5=0;
-    while(copy_N%2==0){ power_2++; copy_N/=2; }
-    while(copy_N%3==0){ power_3++; copy_N/=3; }
-    while(copy_N%5==0){ power_5++; copy_N/=5; }
-    power_sum = power_2+power_3+power_5;
-    #if DEBUG
-    printf("power_2=%d, power_3=%d, power_5=%d\n", power_2, power_3, power_5);
-    #endif
-    
-    int i, j, order[power_sum];
-    i=0;
-    while(i<power_5) order[i++]=5;
-    while(i<power_5+power_3) order[i++]=3;
-    while(i<power_sum) order[i++]=2;
-    
-	int k, m, s;
-	int A, B, C, D, E;
-	double w_re, w_im, w_N_re, w_N_im, t;
-	double tA_re, tA_im, tB_re, tB_im, tC_re, tC_im;
-	double tD_re, tD_im, tE_re, tE_im;
-	double tA, tB, tC, tD, tE;
-	double tw_re, tw_im;
-	m = 1;
-	s = 1;
-	for(i=0;i<power_sum;i++)
-	{
-		s = s*order[i];
-		w_re = 1.0;
-		w_im = 0.0;
-		w_N_re = cos(2.0*M_PI/s);
-		w_N_im = -sin(2.0*M_PI/s);
-		for(k=0;k<m;++k)
-		{
-			for(A=k;A<N;A+=order[i]*m)
-			{
-				switch (order[i]){
-					case 2:
-						B = A + m;
-						// printf("(%d,%d) (%f,%f) %d \n", p, q, w_re, w_im, k);
-						// multiply (w_re + w_im * i) on x[q]
-						t = x_re[B]; // outside loop
-						x_re[B] = w_re*x_re[B] - w_im*x_im[B];
-						x_im[B] = w_re*x_im[B] + w_im*t;
-						
-						t = x_re[A]; // butterfly
-						x_re[A] = x_re[A] + x_re[B];
-						x_re[B] = t       - x_re[B]; 
-						t = x_im[A];
-						x_im[A] = x_im[A] + x_im[B];
-						x_im[B] = t       - x_im[B];
-						break;
-			    	case 3:
-						B = A + m;
-						C = A + 2*m;
-						
-						tB_re = w_re*x_re[B] - w_im*x_im[B];
-						tB_im = w_re*x_im[B] + w_im*x_re[B];
-						x_re[B] = tB_re; x_im[B] = tB_im;
-						
-						tC_re = w_re*(w_re*x_re[C] - w_im*x_im[C]) - w_im*(w_re*x_im[C] + w_im*x_re[C]);
-						tC_im = w_re*(w_re*x_im[C] + w_im*x_re[C]) + w_im*(w_re*x_re[C] - w_im*x_im[C]);
-						x_re[C] = tC_re; x_im[C] = tC_im;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C];
-						tB_re = x_re[A] + ((-1.0/2.0)*x_re[B]-(-sqrt(3)/2.0)*x_im[B]) + ((-1.0/2.0)*x_re[C]-(sqrt(3)/2.0)*x_im[C]);
-						tC_re = x_re[A] + ((-1.0/2.0)*x_re[B]-(sqrt(3)/2.0)*x_im[B]) + ((-1.0/2.0)*x_re[C]-(-sqrt(3)/2.0)*x_im[C]);
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C];
-						tB_im = x_im[A] + ((-sqrt(3)/2.0)*x_re[B]+(-1.0/2.0)*x_im[B]) + ((sqrt(3)/2.0)*x_re[C]+(-1.0/2.0)*x_im[C]);
-						tC_im = x_im[A] + ((sqrt(3)/2.0)*x_re[B]+(-1.0/2.0)*x_im[B]) + ((-sqrt(3)/2.0)*x_re[C]+(-1.0/2.0)*x_im[C]);
-						
-						#if DEBUG
-						printf("SS. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("SS. %f,%f,%f\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re;
-						x_im[A] = tA_im; x_im[B] = tB_im; x_im[C] = tC_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f\n",x_re[A],x_re[B],x_re[C]);
-						printf("EE. %f,%f,%f\n\n",x_im[A],x_im[B],x_im[C]);
-						#endif
-						break;
-				    case 5:
-						B = A + m;
-						C = A + 2*m;
-						D = A + 3*m;
-						E = A + 4*m;
-						
-						tB_re = w_re*x_re[B] - w_im*x_im[B];
-						tB_im = w_re*x_im[B] + w_im*x_re[B];
-						x_re[B] = tB_re; x_im[B] = tB_im;
-						
-						tw_re = w_re*w_re - w_im*w_im;
-						tw_im = w_re*w_im + w_im*w_re;
-						
-						tC_re = tw_re*x_re[C] - tw_im*x_im[C];
-						tC_im = tw_re*x_im[C] + tw_im*x_re[C];
-						x_re[C] = tC_re; x_im[C] = tC_im;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						tD_re = tw_re*x_re[D] - tw_im*x_im[D];
-						tD_im = tw_re*x_im[D] + tw_im*x_re[D];
-						x_re[D] = tD_re; x_im[D] = tD_im;
-						
-						t = tw_re;
-						tw_re = w_re*tw_re - w_im*tw_im;
-						tw_im = w_re*tw_im + w_im*t;
-						
-						tE_re = tw_re*x_re[E] - tw_im*x_im[E];
-						tE_im = tw_re*x_im[E] + tw_im*x_re[E];
-						x_re[E] = tE_re; x_im[E] = tE_im;
-						
-						tA_re = x_re[A] + x_re[B] + x_re[C] + x_re[D] + x_re[E];
-						tB_re = x_re[A] + (cos(2.0*M_PI/5)*x_re[B])-(-sin(2.0*M_PI/5)*x_im[B])
-										+ (cos(4.0*M_PI/5)*x_re[C])-(-sin(4.0*M_PI/5)*x_im[C])
-										+ (cos(6.0*M_PI/5)*x_re[D])-(-sin(6.0*M_PI/5)*x_im[D])
-										+ (cos(8.0*M_PI/5)*x_re[E])-(-sin(8.0*M_PI/5)*x_im[E]);
-						tC_re = x_re[A] + (cos(4.0*M_PI/5)*x_re[B])-(-sin(4.0*M_PI/5)*x_im[B])
-										+ (cos(8.0*M_PI/5)*x_re[C])-(-sin(8.0*M_PI/5)*x_im[C])
-										+ (cos(2.0*M_PI/5)*x_re[D])-(-sin(2.0*M_PI/5)*x_im[D])
-										+ (cos(6.0*M_PI/5)*x_re[E])-(-sin(6.0*M_PI/5)*x_im[E]);
-						tD_re = x_re[A] + (cos(6.0*M_PI/5)*x_re[B])-(-sin(6.0*M_PI/5)*x_im[B])
-										+ (cos(2.0*M_PI/5)*x_re[C])-(-sin(2.0*M_PI/5)*x_im[C])
-										+ (cos(8.0*M_PI/5)*x_re[D])-(-sin(8.0*M_PI/5)*x_im[D])
-										+ (cos(4.0*M_PI/5)*x_re[E])-(-sin(4.0*M_PI/5)*x_im[E]);
-						tE_re = x_re[A] + (cos(8.0*M_PI/5)*x_re[B])-(-sin(8.0*M_PI/5)*x_im[B])
-										+ (cos(6.0*M_PI/5)*x_re[C])-(-sin(6.0*M_PI/5)*x_im[C])
-										+ (cos(4.0*M_PI/5)*x_re[D])-(-sin(4.0*M_PI/5)*x_im[D])
-										+ (cos(2.0*M_PI/5)*x_re[E])-(-sin(2.0*M_PI/5)*x_im[E]);
-						
-						tA_im = x_im[A] + x_im[B] + x_im[C] + x_im[D] + x_im[E];
-						tB_im = x_im[A] + (cos(2.0*M_PI/5)*x_im[B])+(-sin(2.0*M_PI/5)*x_re[B])
-										+ (cos(4.0*M_PI/5)*x_im[C])+(-sin(4.0*M_PI/5)*x_re[C])
-										+ (cos(6.0*M_PI/5)*x_im[D])+(-sin(6.0*M_PI/5)*x_re[D])
-										+ (cos(8.0*M_PI/5)*x_im[E])+(-sin(8.0*M_PI/5)*x_re[E]);
-						tC_im = x_im[A] + (cos(4.0*M_PI/5)*x_im[B])+(-sin(4.0*M_PI/5)*x_re[B])
-										+ (cos(8.0*M_PI/5)*x_im[C])+(-sin(8.0*M_PI/5)*x_re[C])
-										+ (cos(2.0*M_PI/5)*x_im[D])+(-sin(2.0*M_PI/5)*x_re[D])
-										+ (cos(6.0*M_PI/5)*x_im[E])+(-sin(6.0*M_PI/5)*x_re[E]);
-						tD_im = x_im[A] + (cos(6.0*M_PI/5)*x_im[B])+(-sin(6.0*M_PI/5)*x_re[B])
-										+ (cos(2.0*M_PI/5)*x_im[C])+(-sin(2.0*M_PI/5)*x_re[C])
-										+ (cos(8.0*M_PI/5)*x_im[D])+(-sin(8.0*M_PI/5)*x_re[D])
-										+ (cos(4.0*M_PI/5)*x_im[E])+(-sin(4.0*M_PI/5)*x_re[E]);
-						tE_im = x_im[A] + (cos(8.0*M_PI/5)*x_im[B])+(-sin(8.0*M_PI/5)*x_re[B])
-										+ (cos(6.0*M_PI/5)*x_im[C])+(-sin(6.0*M_PI/5)*x_re[C])
-										+ (cos(4.0*M_PI/5)*x_im[D])+(-sin(4.0*M_PI/5)*x_re[D])
-										+ (cos(2.0*M_PI/5)*x_im[E])+(-sin(2.0*M_PI/5)*x_re[E]);
-						#if DEBUG
-						printf("SS. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("SS. %f,%f,%f,%f,%f\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						x_re[A] = tA_re; x_re[B] = tB_re; x_re[C] = tC_re; x_re[D] = tD_re; x_re[E] = tE_re;
-						x_im[A] = tA_im; x_im[B] = tB_im; x_im[C] = tC_im; x_im[D] = tD_im; x_im[E] = tE_im;
-						#if DEBUG
-						printf("EE. %f,%f,%f,%f,%f\n",x_re[A],x_re[B],x_re[C],x_re[D],x_re[E]);
-						printf("EE. %f,%f,%f,%f,%f\n\n",x_im[A],x_im[B],x_im[C],x_im[D],x_im[E]);
-						#endif
-						break;
-				    default:
-						printf("error\n");
-				}
-			}
-			t    = w_re; 
-			w_re = w_N_re*w_re - w_N_im*w_im;
-			w_im = w_N_re*w_im + w_N_im*t;
-		}
-		m = m * order[i];
-	}
-	
-	return 0;
-}
-
-
-/* Fast Fourier Transform */
-
-int FFT_general(double *x_re, double *x_im, int N)
-{
-    int copy_N = N, power_sum = 0;
-    int power_2=0, power_3=0, power_5=0;
-	while(copy_N>1) /* slower */
-	{
-    	if		(copy_N%2==0) { power_2++; copy_N/=2; }
-    	else if (copy_N%3==0) { power_3++; copy_N/=3; }
-    	else   /*copy_N%5==0*/{ power_5++; copy_N/=5; }
-	}
-    /*while(copy_N%2==0){ power_2++; copy_N/=2; }
-    while(copy_N%3==0){ power_3++; copy_N/=3; }
-    while(copy_N%5==0){ power_5++; copy_N/=5; }*/ 
-    power_sum = power_2 + power_3 + power_5;
-    #if DEBUG
-    printf("power_2=%d, power_3=%d, power_5=%d, power_sum=%d\n", power_2, power_3, power_5, power_sum);
-    #endif
-    
-    int i, order[power_sum];
-    int t = power_5+power_3;
-    for (i=0;i<power_5;i++)		order[i]=5;
-    for (i=power_5;i<t;i++)		order[i]=3;
-    for (i=t;i<power_sum;i++)	order[i]=2;
-    
-    /* FFT */
-    bit_reverse(x_re, x_im, N, power_2, power_3, power_5, power_sum, order);
-    butterfly  (x_re, x_im, N, power_2, power_3, power_5, power_sum, order);
-    /* FINISH */
-    
-    return 0;
-}
