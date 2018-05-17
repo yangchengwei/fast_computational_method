@@ -77,7 +77,7 @@ int FFT_general(double *x_re, double *x_im, int N)
 	double tA_im, tB_im, tC_im, tD_im, tE_im;
 	double tw_re, tw_im;
 	
-	double sqrt3_2 = sqrt(3)/2.0;;
+	double sqrt3_2 = sqrt(3.0)/2.0;
 	double cos2pi_5 = cos(2.0*M_PI/5.0);
 	double sin2pi_5 = sin(2.0*M_PI/5.0);
 	double cos4pi_5 = cos(4.0*M_PI/5.0);
@@ -90,8 +90,8 @@ int FFT_general(double *x_re, double *x_im, int N)
 		s *= order[i];
 		w_re = 1.0;
 		w_im = 0.0;
-		w_N_re = cos(2.0*M_PI/s);
-		w_N_im = -sin(2.0*M_PI/s);
+		w_N_re = cos(2.0*M_PI/(double)s);
+		w_N_im = -sin(2.0*M_PI/(double)s);
 		for(k=0;k<m;++k)
 		{
 			copy_re[k] = w_re;
@@ -192,6 +192,15 @@ int FFT_general(double *x_re, double *x_im, int N)
 			x_im[A] = tA_im + tB_im + tC_im;
 			x_im[B] = tA_im + sqrt3_2*(tC_re-tB_re) - 0.5*(tB_im+tC_im);
 			x_im[C] = tA_im + sqrt3_2*(tB_re-tC_re) - 0.5*(tB_im+tC_im);
+			
+			/* teacher version (correctness test) */
+			//double a = -0.5, b = -sqrt(3)/2;
+			//x_re[A] = tA_re + tB_re + tC_re;
+			//x_re[B] = tA_re + (a*tB_re - b*tB_im) + (a*tC_re + b*tC_im);
+			//x_re[C] = tA_re + (a*tC_re - b*tC_im) + (a*tB_re + b*tB_im);
+			//x_im[A] = tA_im + tB_im + tC_im;
+			//x_im[B] = tA_im + (a*tB_im + b*tB_re) + (a*tC_im - b*tC_re);
+			//x_im[C] = tA_im + (a*tB_im - b*tB_re) + (a*tC_im + b*tC_re);
 		}
 		m *= order[i];
 	}
@@ -736,9 +745,9 @@ int FFT_general_np_separated(double *x_re, double *x_im, int N)
     /* FFT */
 	clock_t t1, t2, t3;
 	t1 = clock();
-    bit_reverse(x_re, x_im, N, order);
+    bit_reverse_np(x_re, x_im, N, order);
 	t2 = clock();
-	butterfly  (x_re, x_im, N, power_5, power_53, power_sum, order);
+	butterfly_np  (x_re, x_im, N, power_5, power_53, power_sum, order);
 	t3 = clock();
 	printf("time1 = %f\n",(t2-t1)/(double) CLOCKS_PER_SEC);
 	printf("time2 = %f\n",(t3-t2)/(double) CLOCKS_PER_SEC);

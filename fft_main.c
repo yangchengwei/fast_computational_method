@@ -49,7 +49,7 @@ int main()
 	
 	t1 = clock();
 	
-	FFT_general_separated(x_re, x_im, N);
+	FFT_general_np_separated(x_re, x_im, N);
 	
 	t2 = clock();
 	
