@@ -16,7 +16,9 @@
 
     The discrete Fourier transform transforms a sequence of N complex numbers by
     
-        y[k] = sum( n from 0 to N-1 ){ x[n] * ( cos( 2*pi*k*n/N ) - i * sin( 2*pi*k*n / N ) ) }.
+    ![formula].
+        
+    [formula]:https://wikimedia.org/api/rest_v1/media/math/render/svg/1af0a78dc50bbf118ab6bd4c4dcc3c4ff8502223
         
 - fast_fourier_transform:
 
