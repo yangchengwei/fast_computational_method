@@ -22,7 +22,7 @@
     
 - fast_fourier_transform:
 
-    以 bit-reverse 和 butterfly structure，對長度為 N 的陣列做DFT，N is radix-2, 3 and 5。
+    以 bit-reverse 和 butterfly structure，對長度為 N 的陣列做 DFT，N is radix-2, 3 and 5。
     
     利用 OpenMP 加速，平行處理每一層的所有 butterfly structure。
     
@@ -41,4 +41,9 @@
     [DCT-II]:https://wikimedia.org/api/rest_v1/media/math/render/svg/dce6d60796ea026a5a7564418d130effde90d9cf
     [DST-I]:https://wikimedia.org/api/rest_v1/media/math/render/svg/ebbaf9d8750d87d0c1565cc7d4953c99d6eaf57e
     
+- FFT_using_CUDA:
+
+    以 bit-reverse 和 butterfly structure，對長度為 N 的陣列做 DFT，N is radix-2, 3, 5 and 7。
+    
+    利用 CUDA 加速，平行處理每一層的所有 butterfly structure。
     
